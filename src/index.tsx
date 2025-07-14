@@ -1,6 +1,6 @@
 'use client';
 
-import React, { forwardRef, isValidElement } from 'react';
+import React from 'react';
 import ReactDOM from 'react-dom';
 
 import { CloseIcon, getAsset, Loader } from './assets';
@@ -22,7 +22,7 @@ import {
 const VISIBLE_TOASTS_AMOUNT = 3;
 
 // Viewport padding
-const VIEWPORT_OFFSET = '32px';
+const VIEWPORT_OFFSET = '24px';
 
 // Mobile viewport padding
 const MOBILE_VIEWPORT_OFFSET = '16px';
@@ -37,7 +37,7 @@ const TOAST_WIDTH = 356;
 const GAP = 14;
 
 // Threshold to dismiss a toast
-const SWIPE_THRESHOLD = 20;
+const SWIPE_THRESHOLD = 45;
 
 // Equal to exit animation duration
 const TIME_BEFORE_UNMOUNT = 200;
@@ -84,12 +84,10 @@ const Toast = (props: ToastProps) => {
     duration: durationFromToaster,
     position,
     gap,
-    loadingIcon: loadingIconProp,
     expandByDefault,
     classNames,
     icons,
     closeButtonAriaLabel = 'Close toast',
-    pauseWhenPageIsHidden,
   } = props;
   const [swipeDirection, setSwipeDirection] = React.useState<'x' | 'y' | null>(null);
   const [swipeOutDirection, setSwipeOutDirection] = React.useState<'left' | 'right' | 'up' | 'down' | null>(null);
@@ -165,6 +163,7 @@ const Toast = (props: ToastProps) => {
   }, [setHeights, toast.id]);
 
   React.useLayoutEffect(() => {
+    // Keep height up to date with the content in case it updates
     if (!mounted) return;
     const toastNode = toastRef.current;
     const originalHeight = toastNode.style.height;
@@ -182,7 +181,7 @@ const Toast = (props: ToastProps) => {
         return heights.map((height) => (height.toastId === toast.id ? { ...height, height: newHeight } : height));
       }
     });
-  }, [mounted, toast.title, toast.description, setHeights, toast.id]);
+  }, [mounted, toast.title, toast.description, setHeights, toast.id, toast.jsx, toast.action, toast.cancel]);
 
   const deleteToast = React.useCallback(() => {
     // Save the offset for the exit swipe animation
@@ -226,18 +225,19 @@ const Toast = (props: ToastProps) => {
       }, remainingTime.current);
     };
 
-    if (expanded || interacting || (pauseWhenPageIsHidden && isDocumentHidden)) {
+    if (expanded || interacting || isDocumentHidden) {
       pauseTimer();
     } else {
       startTimer();
     }
 
     return () => clearTimeout(timeoutId);
-  }, [expanded, interacting, toast, toastType, pauseWhenPageIsHidden, isDocumentHidden, deleteToast]);
+  }, [expanded, interacting, toast, toastType, isDocumentHidden, deleteToast]);
 
   React.useEffect(() => {
     if (toast.delete) {
       deleteToast();
+      toast.onDismiss?.(toast);
     }
   }, [deleteToast, toast.delete]);
 
@@ -253,18 +253,10 @@ const Toast = (props: ToastProps) => {
       );
     }
 
-    if (loadingIconProp) {
-      return (
-        <div
-          className={cn(classNames?.loader, toast?.classNames?.loader, 'sonner-loader')}
-          data-visible={toastType === 'loading'}
-        >
-          {loadingIconProp}
-        </div>
-      );
-    }
     return <Loader className={cn(classNames?.loader, toast?.classNames?.loader)} visible={toastType === 'loading'} />;
   }
+
+  const icon = toast.icon || icons?.[toastType] || getAsset(toastType);
 
   return (
     <li
@@ -315,6 +307,7 @@ const Toast = (props: ToastProps) => {
         pointerStartRef.current = null;
       }}
       onPointerDown={(event) => {
+        if (event.button === 2) return; // Return early on right click
         if (disabled || !dismissible) return;
         dragStartTime.current = new Date();
         setOffsetBeforeRemove(offset.current);
@@ -341,6 +334,7 @@ const Toast = (props: ToastProps) => {
 
         if (Math.abs(swipeAmount) >= SWIPE_THRESHOLD || velocity > 0.11) {
           setOffsetBeforeRemove(offset.current);
+
           toast.onDismiss?.(toast);
 
           if (swipeDirection === 'x') {
@@ -351,10 +345,13 @@ const Toast = (props: ToastProps) => {
 
           deleteToast();
           setSwipeOut(true);
-          setIsSwiped(false);
-          return;
-        }
 
+          return;
+        } else {
+          toastRef.current?.style.setProperty('--swipe-amount-x', `0px`);
+          toastRef.current?.style.setProperty('--swipe-amount-y', `0px`);
+        }
+        setIsSwiped(false);
         setSwiping(false);
         setSwipeDirection(null);
       }}
@@ -376,23 +373,35 @@ const Toast = (props: ToastProps) => {
 
         let swipeAmount = { x: 0, y: 0 };
 
+        const getDampening = (delta: number) => {
+          const factor = Math.abs(delta) / 20;
+
+          return 1 / (1.5 + factor);
+        };
+
         // Only apply swipe in the locked direction
         if (swipeDirection === 'y') {
           // Handle vertical swipes
           if (swipeDirections.includes('top') || swipeDirections.includes('bottom')) {
-            if (swipeDirections.includes('top') && yDelta < 0) {
+            if ((swipeDirections.includes('top') && yDelta < 0) || (swipeDirections.includes('bottom') && yDelta > 0)) {
               swipeAmount.y = yDelta;
-            } else if (swipeDirections.includes('bottom') && yDelta > 0) {
-              swipeAmount.y = yDelta;
+            } else {
+              // Smoothly transition to dampened movement
+              const dampenedDelta = yDelta * getDampening(yDelta);
+              // Ensure we don't jump when transitioning to dampened movement
+              swipeAmount.y = Math.abs(dampenedDelta) < Math.abs(yDelta) ? dampenedDelta : yDelta;
             }
           }
         } else if (swipeDirection === 'x') {
           // Handle horizontal swipes
           if (swipeDirections.includes('left') || swipeDirections.includes('right')) {
-            if (swipeDirections.includes('left') && xDelta < 0) {
+            if ((swipeDirections.includes('left') && xDelta < 0) || (swipeDirections.includes('right') && xDelta > 0)) {
               swipeAmount.x = xDelta;
-            } else if (swipeDirections.includes('right') && xDelta > 0) {
-              swipeAmount.x = xDelta;
+            } else {
+              // Smoothly transition to dampened movement
+              const dampenedDelta = xDelta * getDampening(xDelta);
+              // Ensure we don't jump when transitioning to dampened movement
+              swipeAmount.x = Math.abs(dampenedDelta) < Math.abs(xDelta) ? dampenedDelta : xDelta;
             }
           }
         }
@@ -425,81 +434,71 @@ const Toast = (props: ToastProps) => {
         </button>
       ) : null}
       {/* TODO: This can be cleaner */}
-      {toast.jsx || isValidElement(toast.title) ? (
-        toast.jsx ? (
-          toast.jsx
-        ) : typeof toast.title === 'function' ? (
-          toast.title()
-        ) : (
-          toast.title
-        )
-      ) : (
-        <>
-          {toastType || toast.icon || toast.promise ? (
-            <div data-icon="" className={cn(classNames?.icon, toast?.classNames?.icon)}>
-              {toast.promise || (toast.type === 'loading' && !toast.icon) ? toast.icon || getLoadingIcon() : null}
-              {toast.type !== 'loading' ? toast.icon || icons?.[toastType] || getAsset(toastType) : null}
-            </div>
-          ) : null}
+      {(toastType || toast.icon || toast.promise) &&
+      toast.icon !== null &&
+      (icons?.[toastType] !== null || toast.icon) ? (
+        <div data-icon="" className={cn(classNames?.icon, toast?.classNames?.icon)}>
+          {toast.promise || (toast.type === 'loading' && !toast.icon) ? toast.icon || getLoadingIcon() : null}
+          {toast.type !== 'loading' ? icon : null}
+        </div>
+      ) : null}
 
-          <div data-content="" className={cn(classNames?.content, toast?.classNames?.content)}>
-            <div data-title="" className={cn(classNames?.title, toast?.classNames?.title)}>
-              {typeof toast.title === 'function' ? toast.title() : toast.title}
-            </div>
-            {toast.description ? (
-              <div
-                data-description=""
-                className={cn(
-                  descriptionClassName,
-                  toastDescriptionClassname,
-                  classNames?.description,
-                  toast?.classNames?.description,
-                )}
-              >
-                {typeof toast.description === 'function' ? toast.description() : toast.description}
-              </div>
-            ) : null}
+      <div data-content="" className={cn(classNames?.content, toast?.classNames?.content)}>
+        <div data-title="" className={cn(classNames?.title, toast?.classNames?.title)}>
+          {toast.jsx ? toast.jsx : typeof toast.title === 'function' ? toast.title() : toast.title}
+        </div>
+        {toast.description ? (
+          <div
+            data-description=""
+            className={cn(
+              descriptionClassName,
+              toastDescriptionClassname,
+              classNames?.description,
+              toast?.classNames?.description,
+            )}
+          >
+            {typeof toast.description === 'function' ? toast.description() : toast.description}
           </div>
-          {isValidElement(toast.cancel) ? (
-            toast.cancel
-          ) : toast.cancel && isAction(toast.cancel) ? (
-            <button
-              data-button
-              data-cancel
-              style={toast.cancelButtonStyle || cancelButtonStyle}
-              onClick={(event) => {
-                // We need to check twice because typescript
-                if (!isAction(toast.cancel)) return;
-                if (!dismissible) return;
-                toast.cancel.onClick?.(event);
-                deleteToast();
-              }}
-              className={cn(classNames?.cancelButton, toast?.classNames?.cancelButton)}
-            >
-              {toast.cancel.label}
-            </button>
-          ) : null}
-          {isValidElement(toast.action) ? (
-            toast.action
-          ) : toast.action && isAction(toast.action) ? (
-            <button
-              data-button
-              data-action
-              style={toast.actionButtonStyle || actionButtonStyle}
-              onClick={(event) => {
-                // We need to check twice because typescript
-                if (!isAction(toast.action)) return;
-                toast.action.onClick?.(event);
-                if (event.defaultPrevented) return;
-                deleteToast();
-              }}
-              className={cn(classNames?.actionButton, toast?.classNames?.actionButton)}
-            >
-              {toast.action.label}
-            </button>
-          ) : null}
-        </>
-      )}
+        ) : null}
+      </div>
+      {React.isValidElement(toast.cancel) ? (
+        toast.cancel
+      ) : toast.cancel && isAction(toast.cancel) ? (
+        <button
+          data-button
+          data-cancel
+          style={toast.cancelButtonStyle || cancelButtonStyle}
+          onClick={(event) => {
+            // We need to check twice because typescript
+            if (!isAction(toast.cancel)) return;
+            if (!dismissible) return;
+            toast.cancel.onClick?.(event);
+            deleteToast();
+          }}
+          className={cn(classNames?.cancelButton, toast?.classNames?.cancelButton)}
+        >
+          {toast.cancel.label}
+        </button>
+      ) : null}
+      {React.isValidElement(toast.action) ? (
+        toast.action
+      ) : toast.action && isAction(toast.action) ? (
+        <button
+          data-button
+          data-action
+          style={toast.actionButtonStyle || actionButtonStyle}
+          onClick={(event) => {
+            // We need to check twice because typescript
+            if (!isAction(toast.action)) return;
+            toast.action.onClick?.(event);
+            if (event.defaultPrevented) return;
+            deleteToast();
+          }}
+          className={cn(classNames?.actionButton, toast?.classNames?.actionButton)}
+        >
+          {toast.action.label}
+        </button>
+      ) : null}
     </li>
   );
 };
@@ -590,7 +589,7 @@ function useSonner() {
   };
 }
 
-const Toaster = forwardRef<HTMLElement, ToasterProps>(function Toaster(props, ref) {
+const Toaster = React.forwardRef<HTMLElement, ToasterProps>(function Toaster(props, ref) {
   const {
     invert,
     position = 'bottom-right',
@@ -608,10 +607,8 @@ const Toaster = forwardRef<HTMLElement, ToasterProps>(function Toaster(props, re
     toastOptions,
     dir = getDocumentDirection(),
     gap = GAP,
-    loadingIcon,
     icons,
     containerAriaLabel = 'Notifications',
-    pauseWhenPageIsHidden,
   } = props;
   const [toasts, setToasts] = React.useState<ToastT[]>([]);
   const possiblePositions = React.useMemo(() => {
@@ -650,7 +647,10 @@ const Toaster = forwardRef<HTMLElement, ToasterProps>(function Toaster(props, re
   React.useEffect(() => {
     return ToastState.subscribe((toast) => {
       if ((toast as ToastToDismiss).dismiss) {
-        setToasts((toasts) => toasts.map((t) => (t.id === toast.id ? { ...t, delete: true } : t)));
+        // Prevent batching of other state updates
+        requestAnimationFrame(() => {
+          setToasts((toasts) => toasts.map((t) => (t.id === toast.id ? { ...t, delete: true } : t)));
+        });
         return;
       }
 
@@ -674,7 +674,7 @@ const Toaster = forwardRef<HTMLElement, ToasterProps>(function Toaster(props, re
         });
       });
     });
-  }, []);
+  }, [toasts]);
 
   React.useEffect(() => {
     if (theme !== 'system') {
@@ -785,9 +785,8 @@ const Toaster = forwardRef<HTMLElement, ToasterProps>(function Toaster(props, re
             ref={listRef}
             className={className}
             data-sonner-toaster
-            data-theme={actualTheme}
+            data-sonner-theme={actualTheme}
             data-y-position={y}
-            data-lifted={expanded && toasts.length > 1 && !expand}
             data-x-position={x}
             style={
               {
@@ -858,15 +857,14 @@ const Toaster = forwardRef<HTMLElement, ToasterProps>(function Toaster(props, re
                   classNames={toastOptions?.classNames}
                   cancelButtonStyle={toastOptions?.cancelButtonStyle}
                   actionButtonStyle={toastOptions?.actionButtonStyle}
+                  closeButtonAriaLabel={toastOptions?.closeButtonAriaLabel}
                   removeToast={removeToast}
                   toasts={toasts.filter((t) => t.position == toast.position)}
                   heights={heights.filter((h) => h.position == toast.position)}
                   setHeights={setHeights}
                   expandByDefault={expand}
                   gap={gap}
-                  loadingIcon={loadingIcon}
                   expanded={expanded}
-                  pauseWhenPageIsHidden={pauseWhenPageIsHidden}
                   swipeDirections={props.swipeDirections}
                 />
               ))}
@@ -876,5 +874,6 @@ const Toaster = forwardRef<HTMLElement, ToasterProps>(function Toaster(props, re
     </section>
   );
 });
+
 export { toast, Toaster, type ExternalToast, type ToastT, type ToasterProps, useSonner };
 export { type ToastClassnames, type ToastToDismiss, type Action } from './types';
